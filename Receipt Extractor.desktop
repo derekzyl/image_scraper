@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Receipt Extractor
+Comment=Turn PalmPay receipts into a CSV
+Exec=/home/cybergenii/Desktop/codes/pojects/paddyswap/extract_number/dist/ReceiptExtractor/ReceiptExtractor
+Path=/home/cybergenii/Desktop/codes/pojects/paddyswap/extract_number/dist/ReceiptExtractor
+Terminal=false
+Categories=Office;
+StartupNotify=true
