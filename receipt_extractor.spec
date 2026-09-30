@@ -14,6 +14,7 @@ hiddenimports = [
     "yaml",
     "shapely",
     "pyclipper",
+    "openpyxl",
 ]
 
 for package in (

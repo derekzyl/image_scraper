@@ -73,10 +73,11 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
         self.events: queue.Queue = queue.Queue()
         self.working = False
         self._polling = False
+        self.skipped_names: list[str] = []
 
         documents = Path.home() / "Documents"
         folder = documents if documents.is_dir() else Path.home()
-        self.output_path = ctk.StringVar(value=str(folder / "receipts.csv"))
+        self.output_path = ctk.StringVar(value=str(folder / "receipts.xlsx"))
         self.mode = "new"
 
         self._build()
@@ -102,9 +103,9 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
         self.subtitle = ctk.CTkLabel(
             header,
             text=(
-                "Upload one or many PalmPay receipts. The app reads the transaction ID, "
-                "recipient name, and sender name. The recipient number is the account "
-                "after the bank name, with a 0 added in front (7077177416 becomes 07077177416)."
+                "Upload one or many receipts. Only OPay and PalmPay recipients are kept. "
+                "The app reads the transaction ID, recipient name, and sender name. "
+                "The recipient number is the account after the bank name, with a 0 added in front."
             ),
             font=ctk.CTkFont(size=13),
             text_color=MUTED,
@@ -209,7 +210,7 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
 
         ctk.CTkLabel(
             card,
-            text="CSV file",
+            text="Excel file",
             font=ctk.CTkFont(size=16, weight="bold"),
             text_color=INK,
             anchor="w",
@@ -230,7 +231,7 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
 
         self.mode_hint = ctk.CTkLabel(
             card,
-            text="Save creates a new CSV and replaces that file if it already exists.",
+            text="Saves an Excel file. The recipient number keeps its leading 0.",
             text_color=MUTED,
             font=ctk.CTkFont(size=12),
             wraplength=340,
@@ -366,7 +367,7 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
         self.open_button.pack(side="left", padx=(8, 0))
         self.save_button = ctk.CTkButton(
             footer,
-            text="Save CSV",
+            text="Save file",
             command=self.save,
             height=36,
             width=140,
@@ -411,11 +412,11 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
         self.mode = "append" if value == "Add to same file" else "new"
         if self.mode == "append":
             self.mode_hint.configure(
-                text="Save adds these rows to the bottom of the CSV. Receipt numbers already in the file are skipped."
+                text="Adds these rows to the Excel file. Receipt numbers already there are skipped. The leading 0 stays on the recipient number."
             )
         else:
             self.mode_hint.configure(
-                text="Save creates a new CSV and replaces that file if it already exists."
+                text="Saves an Excel file. The recipient number keeps its leading 0."
             )
 
     def add_images(self) -> None:
@@ -511,6 +512,7 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
         self.progress.grid()
         self.progress.set(0)
         self.progress_label.configure(text="Preparing text recognition…")
+        self.skipped_names = []
         paths = [str(path) for path in self.files]
         threading.Thread(target=self._extract_worker, args=(paths,), daemon=True).start()
         if not self._polling:
@@ -538,14 +540,25 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
                     self.progress.set(_index / total)
                     self.progress_label.configure(text=f"Reading {_index} of {total} — {name}")
                 elif kind == "row":
-                    self._upsert_row(event[1])
+                    row = event[1]
+                    if row.skipped:
+                        self._skip_row(row)
+                    else:
+                        self._upsert_row(row)
                 elif kind == "done":
                     self.working = False
                     self.progress.set(1)
                     count = len(self.rows)
-                    self.progress_label.configure(
-                        text=f"Finished {event[1]} image{'s' if event[1] != 1 else ''}. {count} row{'s' if count != 1 else ''} ready to review."
+                    skipped = len(self.skipped_names)
+                    text = (
+                        f"Finished {event[1]} image{'s' if event[1] != 1 else ''}. "
+                        f"{count} row{'s' if count != 1 else ''} ready to review."
                     )
+                    if skipped:
+                        text += (
+                            f" Skipped {skipped} because the recipient bank is not OPay or PalmPay."
+                        )
+                    self.progress_label.configure(text=text)
                     self._refresh_actions()
                     self._polling = False
                     return
@@ -559,6 +572,24 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
         except queue.Empty:
             pass
         self.after(80, self._poll)
+
+    def _skip_row(self, row: ReceiptRow) -> None:
+        self._drop_source(row.source_path)
+        label = row.source_file
+        if row.bank:
+            label = f"{row.source_file} ({row.bank})"
+        self.skipped_names.append(label)
+
+    def _drop_source(self, source_path: str) -> None:
+        for index, existing in enumerate(self.rows):
+            if existing.source_path != source_path:
+                continue
+            self.rows.pop(index)
+            self.row_widgets.pop(index).destroy()
+            if not self.rows:
+                self.empty_results.pack(anchor="w", padx=8, pady=12)
+            self._refresh_actions()
+            return
 
     def _upsert_row(self, row: ReceiptRow) -> None:
         for index, existing in enumerate(self.rows):
@@ -602,17 +633,17 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
         initial = str(Path(current).parent) if current else str(Path.home())
         if self.mode == "append":
             chosen = filedialog.askopenfilename(
-                title="Choose the CSV to add to",
+                title="Choose the Excel file to add to",
                 initialdir=initial,
-                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
             )
         else:
             chosen = filedialog.asksaveasfilename(
-                title="Save CSV as",
+                title="Save Excel file as",
                 initialdir=initial,
-                initialfile=Path(current).name if current else "receipts.csv",
-                defaultextension=".csv",
-                filetypes=[("CSV files", "*.csv")],
+                initialfile=Path(current).name if current else "receipts.xlsx",
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
             )
         if chosen:
             self.output_path.set(chosen)
@@ -623,10 +654,10 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
         self._pull_edits()
         destination = Path(self.output_path.get().strip()).expanduser()
         if not str(destination):
-            messagebox.showwarning("Choose a file", "Pick where the CSV should be saved.")
+            messagebox.showwarning("Choose a file", "Pick where the Excel file should be saved.")
             return
-        if destination.suffix.lower() != ".csv":
-            destination = destination.with_suffix(".csv")
+        if destination.suffix.lower() != ".xlsx":
+            destination = destination.with_suffix(".xlsx")
             self.output_path.set(str(destination))
 
         incomplete = sum(1 for row in self.rows if row.missing_fields or row.error)
@@ -651,11 +682,14 @@ class App(ctk.CTk, *(() if not _DND_READY else (TkinterDnD.DnDWrapper,))):
 
         written = summary["written"]
         skipped = summary["skipped"]
-        detail = f"Saved {written} row{'s' if written != 1 else ''} to\n{destination}"
+        saved_path = summary.get("path", str(destination))
+        self.output_path.set(str(saved_path))
+        detail = f"Saved {written} row{'s' if written != 1 else ''} to\n{saved_path}"
+        detail += "\n\nThe recipient number keeps its leading 0."
         if skipped:
             detail += f"\n\nSkipped {skipped} receipt number{'s' if skipped != 1 else ''} already in the file."
         self.progress_label.configure(text=detail.replace("\n\n", " ").replace("\n", " "))
-        messagebox.showinfo("CSV saved", detail)
+        messagebox.showinfo("File saved", detail)
 
     def open_output_folder(self) -> None:
         raw = self.output_path.get().strip()

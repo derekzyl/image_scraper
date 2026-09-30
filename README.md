@@ -1,6 +1,6 @@
 # Receipt Extractor
 
-Turn PalmPay receipt screenshots into a CSV.
+Turn PalmPay receipt screenshots into an Excel file.
 
 Each row contains:
 
@@ -12,7 +12,7 @@ Each row contains:
 
 `7077177416` becomes `07077177416`. `812 689 3701` becomes `08126893701`. An account that already starts with `0` is kept as it is.
 
-You can upload many images at once, drop more in later, edit any cell, then either create a new CSV or add the rows to a CSV you already have.
+You can upload many images at once, drop more in later, edit any cell, then either create a new Excel file or add the rows to one you already have. The recipient number is saved as text, so the leading 0 stays visible.
 
 ## Click to open
 
@@ -40,4 +40,3 @@ You do not need to install Python or uv yourself. The first launch downloads the
 chmod +x run.sh
 ./run.sh
 ```
-# image_scraper

@@ -43,6 +43,8 @@ class ReceiptRow:
     recipient_number: str = ""
     source_file: str = ""
     source_path: str = ""
+    bank: str = ""
+    skipped: bool = False
     error: str = ""
     warnings: list[str] = field(default_factory=list)
 
@@ -75,6 +77,10 @@ class ReceiptExtractor:
             if _needs_retry(parsed):
                 fallback = _parse_ocr(self._read(_prepare_image(image_path, enhance=False)))
                 parsed = _merge_parses(parsed, fallback)
+            row.bank = parsed.get("bank", "")
+            if not parsed.get("allowed_bank"):
+                row.skipped = True
+                return row
             row.receipt_number = parsed["receipt_number"]
             row.name = parsed["name"]
             row.sender_name = parsed["sender_name"]
@@ -114,7 +120,12 @@ def _prepare_image(path: Path, enhance: bool = True):
     return np.array(image)
 
 
+_ALLOWED_BANKS = {"opay", "palmpay"}
+
+
 def _needs_retry(parsed: dict[str, str]) -> bool:
+    if not parsed.get("allowed_bank"):
+        return True
     return not all(
         parsed.get(key)
         for key in ("receipt_number", "name", "sender_name", "recipient_number")
@@ -122,6 +133,8 @@ def _needs_retry(parsed: dict[str, str]) -> bool:
 
 
 def _merge_parses(primary: dict[str, str], fallback: dict[str, str]) -> dict[str, str]:
+    if fallback.get("allowed_bank") and not primary.get("allowed_bank"):
+        return fallback
     merged = dict(primary)
     for key in ("receipt_number", "recipient_number"):
         if not merged.get(key):
@@ -148,12 +161,15 @@ def _parse_ocr(result: list) -> dict[str, str]:
     name = _section_value(lines, indexes, "recipient", "sender", kind="name")
     sender = _section_value(lines, indexes, "sender", "transaction_info", kind="name")
     receipt = _transaction_id(lines, indexes)
-    account = _account_digits(lines, indexes)
+    bank, account = _recipient_account(lines, indexes)
+    allowed = _allowed_bank(bank)
     return {
         "receipt_number": receipt,
         "name": name,
         "sender_name": sender,
-        "recipient_number": to_recipient_number(account),
+        "recipient_number": to_recipient_number(account) if allowed else "",
+        "bank": bank,
+        "allowed_bank": allowed,
     }
 
 
@@ -269,22 +285,30 @@ def _transaction_id(lines: list[dict], indexes: dict[str, int]) -> str:
     return ""
 
 
-def _account_digits(lines: list[dict], indexes: dict[str, int]) -> str:
+def _allowed_bank(bank: str) -> bool:
+    return _bank_key(bank) in _ALLOWED_BANKS
+
+
+def _bank_key(bank: str) -> str:
+    return re.sub(r"[^a-z]", "", (bank or "").lower())
+
+
+def _recipient_account(lines: list[dict], indexes: dict[str, int]) -> tuple[str, str]:
     start = indexes.get("recipient")
     if start is None:
-        return ""
+        return "", ""
     end = _next_index(indexes, start, "sender")
     # The account sits under the recipient name, above the sender.
     for line in lines[start : end]:
         if _line_has_label(line, dict(_LABELS)["recipient"]) and "*" in line["text"]:
             continue
         parsed = _parse_account(line["text"])
-        if parsed:
+        if parsed[1]:
             return parsed
-    return ""
+    return "", ""
 
 
-def _parse_account(text: str) -> str:
+def _parse_account(text: str) -> tuple[str, str]:
     raw = (
         text.replace("│", "|")
         .replace("ǀ", "|")
@@ -293,17 +317,17 @@ def _parse_account(text: str) -> str:
     )
     raw = _clean(raw)
     if "*" in raw or not raw:
-        return ""
+        return "", ""
     match = _ACCOUNT_RE.match(raw) or _ACCOUNT_LOOSE_RE.match(raw)
     if not match:
-        return ""
+        return "", ""
     bank = match.group("bank")
     if not re.search(r"[A-Za-z]", bank):
-        return ""
+        return "", ""
     digits = re.sub(r"\D", "", match.group("acct"))
     if len(digits) not in (10, 11):
-        return ""
-    return digits
+        return "", ""
+    return _clean(bank), digits
 
 
 def _next_index(indexes: dict[str, int], start: int, preferred: str) -> int:
